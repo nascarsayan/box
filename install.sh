@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install box, the rootless dev sandbox manager.
 #
-#   curl -fsSL https://raw.githubusercontent.com/nascarsayan/box/main/install.sh | sh -
+#   curl -fsSL https://snas.s.gy/box | sh -
 #   curl -fsSL .../install.sh | sh -s -- -c ~/mybox -d /scratch/sandbox
 #
 # This script does one thing: put a single static binary on your PATH. Everything

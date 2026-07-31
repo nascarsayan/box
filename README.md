@@ -4,10 +4,24 @@ A dev sandbox that needs no root: `nix-user-chroot` + `home-manager`, driven by 
 static binary.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/nascarsayan/box/main/install.sh | sh -
+curl -fsSL https://snas.s.gy/box | sh -
 ```
 
 Then `box` to enter it, or just `,`.
+
+```sh
+# somewhere other than the defaults
+curl -fsSL https://snas.s.gy/box | sh -s -- -d /scratch/sandbox -c ~/mybox
+
+# install the binary under a different name
+curl -fsSL https://snas.s.gy/box | sh -s -- -n sbox
+
+# just the binary, set nothing up yet
+curl -fsSL https://snas.s.gy/box | sh -s -- --no-init
+```
+
+`-fsSL` matters: `snas.s.gy` is a 302, and without `-L` curl hands `sh` the
+redirect body instead of the script.
 
 Nothing is installed system-wide. No sudo, no package manager, no `/nix` on the
 host. Everything lives under one directory you choose and can delete in one
