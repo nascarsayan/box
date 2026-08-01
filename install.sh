@@ -18,6 +18,9 @@ CONF_DIR=""
 SANDBOX_DIR=""
 RUN_INIT=1
 VERSION="${BOX_VERSION:-latest}"
+# Anything this script does not recognise is forwarded to `box init`, so the
+# one-liner can drive the whole install: --yes, --no-rc, --modules ... .
+INIT_ARGS=""
 
 say()  { printf '\033[1;34m[box]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[box]\033[0m %s\n' "$*" >&2; }
@@ -35,7 +38,14 @@ usage: install.sh [options]
       --no-init           just install the binary, do not set anything up
   -h, --help              this
 
-The binary is self-contained and static: no nix, no root, no dependencies.
+Any other option is passed straight to `box init`, so the whole install can be
+driven from the one-liner:
+
+  ... | sh -s -- --yes --no-rc
+  ... | sh -s -- --modules kubernetes,ai
+
+Run `box help init` for that list. The binary is self-contained and static: no
+nix, no root, no dependencies.
 USAGE
 }
 
@@ -53,7 +63,10 @@ while [ $# -gt 0 ]; do
     --version=*)      VERSION="${1#*=}"; shift ;;
     --no-init)        RUN_INIT=0; shift ;;
     -h|--help)        usage; exit 0 ;;
-    *) usage; die "unknown option: $1" ;;
+    --) shift; INIT_ARGS="$INIT_ARGS $*"; break ;;
+    # Not ours: hand it to `box init` rather than rejecting it. The alternative is
+    # an installer that cannot reach half of the thing it installs.
+    *) INIT_ARGS="$INIT_ARGS $1"; shift ;;
   esac
 done
 
@@ -114,6 +127,9 @@ fi
 set --
 [ -n "$CONF_DIR" ]    && set -- "$@" -c "$CONF_DIR"
 [ -n "$SANDBOX_DIR" ] && set -- "$@" -d "$SANDBOX_DIR"
+# Deliberately unquoted: INIT_ARGS is a flag list that must word-split.
+# shellcheck disable=SC2086
+set -- "$@" $INIT_ARGS
 
 # stdin is the pipe this script arrived through, so the TUI needs the terminal
 # handed to it explicitly or it would see EOF and fall back to defaults.
