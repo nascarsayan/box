@@ -164,6 +164,11 @@ NFS or EFS is an order of magnitude slower to build in.`,
 			return err
 		}
 
+		note("reclaiming build leftovers")
+		if err := e.prune(1); err != nil {
+			note("prune skipped: " + err.Error())
+		}
+
 		var touched []string
 		rcs := e.rcCandidates()
 		if noRC {
@@ -293,7 +298,10 @@ func (e *Env) installNix() error {
 
 	// --no-daemon: multi-user wants systemd and a build-user group, i.e. root.
 	note("this downloads ~25MB and takes a minute")
-	if err := e.runInChrootBare(os.Stderr, "/bin/sh", installer, "--no-daemon"); err != nil {
+	// --no-channel-add: the installer otherwise unpacks the nixpkgs channel into
+	// ~/.nix-defexpr, 333M that nothing reads -- every path here goes through the
+	// flake and its own pinned nixpkgs.
+	if err := e.runInChrootBare(os.Stderr, "/bin/sh", installer, "--no-daemon", "--no-channel-add"); err != nil {
 		return fmt.Errorf("nix installation failed: %w", err)
 	}
 	okay(e.nixDir())
