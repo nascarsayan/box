@@ -98,6 +98,10 @@ NFS or EFS is an order of magnitude slower to build in.`,
 			return fmt.Errorf("unprivileged user namespaces are unavailable.\n       %s", why)
 		}
 		okay("user namespaces available")
+		if bad := checkDevNodes(); len(bad) > 0 {
+			return fmt.Errorf("this host's /dev is broken: %s\n%s",
+				strings.Join(bad, "; "), devNodeFix())
+		}
 
 		for _, d := range []string{"bin", "nix", "tmp", "run"} {
 			if err := os.MkdirAll(filepath.Join(e.SandboxDir, d), 0o755); err != nil {

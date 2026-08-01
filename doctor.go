@@ -31,6 +31,59 @@ func userNSAvailable() (bool, string) {
 	return true, ""
 }
 
+// checkDevNodes catches a host whose /dev has lost its basic character devices.
+//
+// Seen in the wild: /dev/null missing, then some script's `> /dev/null` creating a
+// *regular file* in its place. Everything then fails obliquely -- the nix
+// installer's `command -v tar >/dev/null` fails on the redirect and reports
+// "you do not have 'tar' installed", which sends you looking in entirely the
+// wrong place.
+func checkDevNodes() []string {
+	var bad []string
+	for _, dev := range []string{"/dev/null", "/dev/zero"} {
+		fi, err := os.Stat(dev)
+		if err != nil {
+			bad = append(bad, dev+" is missing")
+			continue
+		}
+		if fi.Mode()&os.ModeCharDevice == 0 {
+			bad = append(bad, fmt.Sprintf("%s is a %s, not a character device", dev, describeType(fi)))
+		}
+	}
+	return bad
+}
+
+// Mode().Type() renders as an empty bit string for a regular file, which reads as
+// "/dev/null is a ----------". Name the thing instead.
+func describeType(fi os.FileInfo) string {
+	m := fi.Mode()
+	switch {
+	case m.IsRegular():
+		return fmt.Sprintf("regular file (%d bytes)", fi.Size())
+	case m.IsDir():
+		return "directory"
+	case m&os.ModeSymlink != 0:
+		return "symlink"
+	case m&os.ModeNamedPipe != 0:
+		return "fifo"
+	case m&os.ModeSocket != 0:
+		return "socket"
+	case m&os.ModeDevice != 0:
+		return "block device"
+	default:
+		return m.Type().String()
+	}
+}
+
+// devNodeFix is the repair, printed rather than run: recreating device nodes on
+// someone's host is theirs to decide.
+func devNodeFix() string {
+	return `  as root on the host:
+       rm -f /dev/null && mknod -m 666 /dev/null c 1 3
+       [ -e /dev/zero ] || mknod -m 666 /dev/zero c 1 5
+       restorecon /dev/null /dev/zero 2>/dev/null || true`
+}
+
 var cmdDoctor = &command{
 	name:    "doctor",
 	summary: "check this host can run a sandbox",
@@ -58,6 +111,12 @@ cannot find.`,
 			check("user namespaces", true, "available")
 		} else {
 			check("user namespaces", false, why)
+		}
+
+		if bad := checkDevNodes(); len(bad) > 0 {
+			check("/dev nodes", false, strings.Join(bad, "; ")+"\n"+devNodeFix())
+		} else {
+			check("/dev nodes", true, "/dev/null and /dev/zero are character devices")
 		}
 
 		for _, c := range []string{"curl", "git"} {
