@@ -26,6 +26,10 @@ type LocalConf struct {
 	Passthrough []string          `json:"passthrough"`
 	Modules     []string          `json:"modules"`
 	SessionVars map[string]string `json:"sessionVariables,omitempty"`
+
+	// Set when the file had no module list at all, so callers can tell "not
+	// configured" (means: all) from an explicit empty list (means: none).
+	ModulesUnset bool `json:"-"`
 }
 
 type GitIdentity struct {
@@ -43,6 +47,12 @@ func (e *Env) readLocalConf() (*LocalConf, error) {
 	var c LocalConf
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("%s is not valid JSON: %w", e.localConfPath(), err)
+	}
+	// nil means the key was absent or null, which is "not configured" -- and the
+	// answer to that is every module, matching what the flake does with the same
+	// input. An explicit [] is different: that is "none", and stays none.
+	if c.Modules == nil {
+		c.ModulesUnset = true
 	}
 	return &c, nil
 }

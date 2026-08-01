@@ -22,7 +22,7 @@ const (
 
 var cmdInit = &command{
 	name:    "init",
-	args:    "[-c CONF_DIR] [-d SANDBOX_DIR] [--repo URL] [--yes] [--no-rc]",
+	args:    "[-c DIR] [-d DIR] [--repo URL] [-y] [--modules LIST] [--no-rc]",
 	summary: "create the sandbox: nix, the config clone, then apply",
 	long: `Sets up everything, from nothing, without root:
 
@@ -30,7 +30,7 @@ var cmdInit = &command{
   2. downloads a checksum-pinned nix-user-chroot
   3. installs nix into <sandbox>/nix with the official single-user installer
   4. clones the configuration repo to <confDir>, default ~/.config/box
-  5. asks the few things it cannot work out, and writes them to local.json
+  5. opens the module picker, with everything preselected
   6. builds and activates the configuration
   7. adds the , shortcuts to your shell rc
 
@@ -39,7 +39,8 @@ Safe to re-run: each step is skipped if already done, so it doubles as a repair.
   -c, --conf-dir DIR     where to clone the configuration (default ~/.config/box)
   -d, --sandbox-dir DIR  where nix and $HOME-inside live (default ~/sandbox)
       --repo URL         clone a fork instead
-      --yes              never prompt; derive every answer
+      -y, --yes          never prompt; install every module
+          --non-interactive, --automated   same as --yes
       --no-rc            do not touch any shell rc file
       --modules LIST     comma-separated modules to enable; '' for none
 
@@ -65,7 +66,7 @@ NFS or EFS is an order of magnitude slower to build in.`,
 				repo = rest[i]
 			case strings.HasPrefix(a, "--repo="):
 				repo = strings.TrimPrefix(a, "--repo=")
-			case a == "-y" || a == "--yes":
+			case a == "-y" || a == "--yes" || a == "--non-interactive" || a == "--automated":
 				yes = true
 			case a == "--no-rc":
 				noRC = true
@@ -127,13 +128,9 @@ NFS or EFS is an order of magnitude slower to build in.`,
 		}
 		conf, err := e.readLocalConf()
 		if err != nil {
-			defaults := make([]string, 0, len(meta))
-			for n, m := range meta {
-				if m.Default {
-					defaults = append(defaults, n)
-				}
-			}
-			conf = e.defaultLocalConf(defaults)
+			// Everything preselected on a fresh install; the picker is where you
+			// take things out.
+			conf = e.defaultLocalConf(sortedKeys(meta))
 		}
 		if modulesSet {
 			conf.Modules = splitList(modules)
@@ -204,40 +201,24 @@ NFS or EFS is an order of magnitude slower to build in.`,
 	},
 }
 
-// Only what cannot be derived: module selection (swings the download by gigabytes)
-// and git identity (committing as the wrong person is worse than a prompt).
+// Only the module picker, plus git identity when it could not be read from the
+// real account's config. Everything else is derived; asking about it would be
+// friction for no decision.
 func (e *Env) configureForm(c *LocalConf, meta map[string]ModuleMeta) error {
-	names := sortedKeys(meta)
-	opts := make([]huh.Option[string], 0, len(names))
-	on := map[string]bool{}
-	for _, n := range c.Modules {
-		on[n] = true
-	}
-	for _, n := range names {
-		m := meta[n]
-		opts = append(opts, huh.NewOption(
-			fmt.Sprintf("%-14s %-9s %s", n, m.Size, m.Summary), n).Selected(on[n]))
-	}
-
-	return huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().Title("git author name").
-				Description("prefilled from your real ~/.gitconfig where it has one").
-				Value(&c.Git.UserName),
+	if c.Git.UserName == "" || c.Git.UserEmail == "" {
+		if err := huh.NewForm(huh.NewGroup(
+			huh.NewInput().Title("git author name").Value(&c.Git.UserName),
 			huh.NewInput().Title("git author email").Value(&c.Git.UserEmail),
-		).Title("identity"),
-		huh.NewGroup(
-			huh.NewMultiSelect[string]().
-				Title("modules").
-				Description("space toggles; the base tools are always installed").
-				Options(opts...).
-				Value(&c.Modules),
-		),
-		huh.NewGroup(
-			huh.NewInput().Title("worktree root (ghq/gwq)").Value(&c.GhqRoot),
-			huh.NewInput().Title("tmux socket and session name").Value(&c.TmuxSocket),
-		).Title("workflow"),
-	).WithTheme(huh.ThemeCatppuccin()).WithShowHelp(true).Run()
+		).Title("git identity")).WithTheme(huh.ThemeCatppuccin()).Run(); err != nil {
+			return err
+		}
+	}
+	selected, err := pickModules(meta, c.Modules)
+	if err != nil {
+		return err
+	}
+	c.Modules = selected
+	return nil
 }
 
 func (e *Env) installChroot() error {
