@@ -36,7 +36,7 @@ func (e *Env) chrootEnv(extra ...string) []string {
 		strip[k] = true
 	}
 	// These are set explicitly below; drop any inherited value first.
-	for _, k := range []string{"HOME", "SANDBOX_HOME", "TMPDIR", "TMUX_TMPDIR", "BOX_INSIDE", "BOX_REAL_HOME", "BOX_OUTER_PATH"} {
+	for _, k := range []string{"HOME", "SANDBOX_HOME", "TMPDIR", "TMUX_TMPDIR", "BOX_INSIDE", "BOX_REAL_HOME", "BOX_OUTER_PATH", "NIX_CONFIG"} {
 		strip[k] = true
 	}
 
@@ -64,6 +64,7 @@ func (e *Env) chrootEnv(extra ...string) []string {
 		"TMUX_TMPDIR="+filepath.Join(e.SandboxDir, "run"),
 		// Appended, not replaced: host-only tools (VS Code's `code`) must resolve.
 		"BOX_OUTER_PATH="+os.Getenv("PATH"),
+		"NIX_CONFIG="+nixConfig(),
 	)
 	if ca := caBundle(); ca != "" {
 		out = append(out, "NIX_SSL_CERT_FILE="+ca)
@@ -220,4 +221,31 @@ first, the host PATH after it, and home-manager's session variables are exported
 		}
 		return e.inChroot(rest...)
 	},
+}
+
+// nixConfig is passed as $NIX_CONFIG rather than written to a nix.conf.
+//
+// Not ~/.config/nix/nix.conf: home-manager manages that, and a real file where it
+// wants a symlink aborts the switch. Not $NIX_CONF_DIR either -- that was tried and
+// nix ignored it. NIX_CONFIG is read directly as config lines and demonstrably works.
+//
+// build-users-group: nix defaults it to "nixbld" when uid 0 and to empty otherwise,
+// so as root the installer dies with
+//
+//	error: the group 'nixbld' specified in 'build-users-group' does not exist
+//
+// A sandbox is single-user by definition, so empty is right for everyone.
+//
+// require-drop-supplementary-groups: only as root, and only inside a user namespace,
+// where setgroups is denied and nix fails with
+//
+//	error: setgroups failed. Set the require-drop-supplementary-groups option to false
+//
+// Left at its default for everyone else rather than weakening it globally.
+func nixConfig() string {
+	lines := []string{"build-users-group ="}
+	if os.Geteuid() == 0 {
+		lines = append(lines, "require-drop-supplementary-groups = false")
+	}
+	return strings.Join(lines, "\n")
 }

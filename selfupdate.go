@@ -110,6 +110,12 @@ func latestAsset() (tag, url string, err error) {
 }
 
 func download(url, dst string) error {
+	// The parent may be missing: <sandbox>/tmp is created by init, but a concurrent
+	// `box remove` can take it away mid-run, and os.Create alone then fails with a
+	// bare ENOENT that says nothing about why.
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {

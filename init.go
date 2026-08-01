@@ -41,6 +41,7 @@ Safe to re-run: each step is skipped if already done, so it doubles as a repair.
       --repo URL         clone a fork instead
       --yes              never prompt; derive every answer
       --no-rc            do not touch any shell rc file
+      --modules LIST     comma-separated modules to enable; '' for none
 
 Put the sandbox on a local disk. The nix store is several GB and a store on
 NFS or EFS is an order of magnitude slower to build in.`,
@@ -52,6 +53,8 @@ NFS or EFS is an order of magnitude slower to build in.`,
 		repo := defaultConfRepo
 		yes := os.Getenv("BOX_ASSUME_YES") == "1"
 		noRC := false
+		modules := ""
+		modulesSet := false
 		for i := 0; i < len(rest); i++ {
 			switch a := rest[i]; {
 			case a == "--repo":
@@ -66,6 +69,14 @@ NFS or EFS is an order of magnitude slower to build in.`,
 				yes = true
 			case a == "--no-rc":
 				noRC = true
+			case a == "--modules":
+				if i+1 >= len(rest) {
+					return fmt.Errorf("--modules needs a list (use '' for none)")
+				}
+				i++
+				modules, modulesSet = rest[i], true
+			case strings.HasPrefix(a, "--modules="):
+				modules, modulesSet = strings.TrimPrefix(a, "--modules="), true
 			default:
 				return fmt.Errorf("unknown flag %q", a)
 			}
@@ -124,7 +135,16 @@ NFS or EFS is an order of magnitude slower to build in.`,
 			}
 			conf = e.defaultLocalConf(defaults)
 		}
-		if interactive {
+		if modulesSet {
+			conf.Modules = splitList(modules)
+			for _, n := range conf.Modules {
+				if _, ok := meta[n]; !ok {
+					return fmt.Errorf("unknown module %q\n       known: %s",
+						n, strings.Join(sortedKeys(meta), ", "))
+				}
+			}
+		}
+		if interactive && !modulesSet {
 			if err := e.configureForm(conf, meta); err != nil {
 				return err
 			}
@@ -253,9 +273,17 @@ func (e *Env) installChroot() error {
 }
 
 func (e *Env) installNix() error {
-	if _, err := os.Stat(filepath.Join(e.nixDir(), "store")); err == nil {
-		okay("nix store already present")
+	// Both, not just the store: a failed install leaves /nix/store populated but no
+	// profile, and skipping on the store alone would then fail further along with a
+	// far less obvious error.
+	_, storeErr := os.Stat(filepath.Join(e.nixDir(), "store"))
+	_, nixErr := os.Stat(filepath.Join(e.SandboxDir, ".nix-profile", "bin", "nix"))
+	if storeErr == nil && nixErr == nil {
+		okay("nix already installed")
 		return nil
+	}
+	if storeErr == nil && nixErr != nil {
+		note("store present but no profile; re-running the installer over it")
 	}
 	installer := filepath.Join(e.tmpDir(), "nix-install.sh")
 	if err := download(nixInstallURL, installer); err != nil {

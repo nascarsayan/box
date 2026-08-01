@@ -48,6 +48,15 @@ func (e *Env) readLocalConf() (*LocalConf, error) {
 }
 
 func (e *Env) writeLocalConf(c *LocalConf) error {
+	// A nil slice marshals to JSON null, not [], and nix then fails deep inside
+	// lib.subtractLists with "expected a list but found null". `--modules ""` is the
+	// obvious way to get here.
+	if c.Modules == nil {
+		c.Modules = []string{}
+	}
+	if c.Passthrough == nil {
+		c.Passthrough = []string{}
+	}
 	sort.Strings(c.Modules)
 	sort.Strings(c.Passthrough)
 	b, err := json.MarshalIndent(c, "", "  ")
