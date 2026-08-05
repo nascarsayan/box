@@ -10,12 +10,21 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 )
 
-// Set by ldflags at release time.
-var version = "dev"
+// Set by ldflags at release time. For any other build -- `go build`, `go
+// install`, a rebuild from a checkout -- these stay empty and the values come
+// from the VCS stamps Go embeds instead, so `box version` still identifies
+// exactly what is running.
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+)
 
 type command struct {
 	name    string
@@ -162,13 +171,104 @@ func indent(s, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
+// vcsStamps reads the commit, build time and dirty flag that Go embeds when
+// building from a git checkout. Release builds pass these via ldflags and take
+// precedence; this is what makes a locally built binary identifiable.
+func vcsStamps() (rev, when string, dirty bool) {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", "", false
+	}
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.time":
+			when = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	return rev, when, dirty
+}
+
 var cmdVersion = &command{
 	name:    "version",
+	args:    "[--short]",
 	summary: "print the box version",
-	run: func(_ *Env, _ []string) error {
-		fmt.Println(version)
+	long: `Reports the running binary and the configuration it is driving.
+
+Two things determine box's behaviour: the binary and the config clone. A version
+that named only the binary would not tell you what actually ran, so both are
+printed, each with its git revision.
+
+  box version            everything
+  box version --short    just the binary version, for scripts`,
+	run: func(e *Env, args []string) error {
+		rev, when, dirty := vcsStamps()
+		if commit == "" {
+			commit = rev
+		}
+		if date == "" {
+			date = when
+		}
+
+		v := version
+		// An untagged build says "dev"; pin it to a commit so two dev builds
+		// are still tellable apart.
+		if v == "dev" && commit != "" {
+			v = "dev+" + short(commit)
+		}
+		if dirty {
+			v += " (dirty)"
+		}
+
+		for _, a := range args {
+			if a == "--short" {
+				fmt.Println(v)
+				return nil
+			}
+		}
+
+		fmt.Printf("box      %s\n", v)
+		if commit != "" {
+			fmt.Printf("commit   %s\n", commit)
+		}
+		if date != "" {
+			fmt.Printf("built    %s\n", date)
+		}
+		fmt.Printf("go       %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+
+		// The config clone is the other half of "which version is running".
+		if e != nil && e.ConfDir != "" {
+			fmt.Printf("config   %s\n", e.ConfDir)
+			if out, err := e.git("rev-parse", "--short", "HEAD"); err == nil && out != "" {
+				st, _ := e.git("status", "--porcelain")
+				mark := ""
+				if st != "" {
+					mark = " (dirty)"
+				}
+				desc, _ := e.git("describe", "--tags", "--always")
+				fmt.Printf("config@  %s%s%s\n", out, dashPrefix(desc, out), mark)
+			}
+		}
 		return nil
 	},
+}
+
+// dashPrefix renders " (tag)" when describe says something beyond the bare sha.
+func dashPrefix(desc, sha string) string {
+	if desc == "" || desc == sha {
+		return ""
+	}
+	return " " + desc
+}
+
+func short(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
 }
 
 func sortedKeys[V any](m map[string]V) []string {
