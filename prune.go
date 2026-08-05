@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
-// storeSizeMB is measured with du rather than `nix path-info -S`, which reports
-// closure size and double-counts paths shared between generations.
+// Measured with du rather than `nix path-info -S`, which reports closure size and
+// double-counts paths shared between generations.
 func (e *Env) storeSizeMB() int {
 	out, err := exec.Command("du", "-sm", e.nixDir()).Output()
 	if err != nil {
@@ -66,11 +68,54 @@ current one only, which is what you want on a machine you can rebuild with
 	},
 }
 
+// pruneTmp removes leftovers from interrupted builds.
+//
+// nix cleans its own build directories on success, but a build that is killed --
+// Ctrl-C, OOM, a dropped ssh session -- leaves them behind, and they are large:
+// a full rebuild peaks in the tens of GB because every downloaded NAR is
+// decompressed here. On a sandbox whose store and TMPDIR share a disk that is the
+// difference between working and filling the filesystem.
+//
+// Only entries older than an hour, so a build running in another shell is not
+// pulled out from under itself.
+func (e *Env) pruneTmp() (int, error) {
+	dir := e.tmpDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, nil // no tmp dir yet is not an error
+	}
+	cutoff := time.Now().Add(-time.Hour)
+	removed := 0
+	for _, ent := range entries {
+		info, err := ent.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		p := filepath.Join(dir, ent.Name())
+		// Build sandboxes contain read-only trees; chmod before removing, the same
+		// reason `box remove` does it for the store.
+		_ = filepath.Walk(p, func(q string, fi os.FileInfo, err error) error {
+			if err == nil && fi.IsDir() {
+				_ = os.Chmod(q, fi.Mode().Perm()|0o300)
+			}
+			return nil
+		})
+		if os.RemoveAll(p) == nil {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
 func (e *Env) prune(keepGenerations int) error {
 	if err := e.requireSandbox(); err != nil {
 		return err
 	}
 	before := e.storeSizeMB()
+
+	if n, _ := e.pruneTmp(); n > 0 {
+		note(fmt.Sprintf("removed %d stale build leftover(s) from %s", n, e.tmpDir()))
+	}
 
 	step(1, 2, "collecting garbage")
 	// +N keeps the N most recent; nix-env counts the current one among them.

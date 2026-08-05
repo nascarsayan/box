@@ -69,19 +69,12 @@ home, but only the links are removed, never their targets.`,
 			}
 		}
 
-		// Every path in a nix store is read-only; without this, rm fails on the
-		// first one and leaves the tree half-deleted.
-		store := filepath.Join(e.nixDir(), "store")
-		if _, err := os.Stat(store); err == nil {
-			note("making the store writable")
-			if err := chmodTree(store); err != nil {
-				warn(fmt.Sprintf("chmod: %v", err))
-			}
-		}
-
 		for _, t := range targets {
 			note("removing " + t)
-			if err := os.RemoveAll(t); err != nil {
+			// safeRemoveAll, not os.RemoveAll: see saferm.go. A recursive delete that
+			// meets nix-user-chroot's bind mounts walks out of the sandbox and eats
+			// the host.
+			if err := safeRemoveAll(t); err != nil {
 				return err
 			}
 		}
@@ -98,17 +91,4 @@ home, but only the links are removed, never their targets.`,
 		okay("done")
 		return nil
 	},
-}
-
-// Directories need +w before their entries can be unlinked.
-func chmodTree(root string) error {
-	return filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // keep going; a single unreadable entry should not abort
-		}
-		if info.IsDir() {
-			_ = os.Chmod(p, info.Mode().Perm()|0o300)
-		}
-		return nil
-	})
 }

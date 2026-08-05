@@ -36,7 +36,7 @@ func (e *Env) chrootEnv(extra ...string) []string {
 		strip[k] = true
 	}
 	// These are set explicitly below; drop any inherited value first.
-	for _, k := range []string{"HOME", "SANDBOX_HOME", "TMPDIR", "TMUX_TMPDIR", "BOX_INSIDE", "BOX_REAL_HOME", "BOX_OUTER_PATH", "NIX_CONFIG"} {
+	for _, k := range []string{"HOME", "SANDBOX_HOME", "TMPDIR", "TMUX_TMPDIR", "BOX_INSIDE", "BOX_REAL_HOME", "BOX_OUTER_PATH", "NIX_CONFIG", "BOX_INNER_TMPDIR"} {
 		strip[k] = true
 	}
 
@@ -58,8 +58,18 @@ func (e *Env) chrootEnv(extra ...string) []string {
 		"BOX_SANDBOX_DIR="+e.SandboxDir,
 		// So a nested `box` knows not to re-enter the chroot.
 		"BOX_INSIDE=1",
-		// /tmp is small and shared; nix builds fill it.
-		"TMPDIR="+e.tmpDir(),
+		// nix-user-chroot mkdtemp()s its pivot root inside $TMPDIR and bind-mounts
+		// the whole host filesystem into it. That must NOT be inside the sandbox:
+		// `box remove` deletes the sandbox, and a delete that walks into those binds
+		// eats /dev, /etc and /usr on the host, as root. Observed in the wild -- it
+		// is what unlinked every device node on one machine, leaving only the mount
+		// points (pts, shm, mqueue) behind because those return EBUSY.
+		//
+		// So the chroot scratch lives on the host tmp, where it is a few KB of empty
+		// stubs, and the inner script re-points TMPDIR at the sandbox afterwards so
+		// nix builds still get the big disk.
+		"TMPDIR="+os.TempDir(),
+		"BOX_INNER_TMPDIR="+e.tmpDir(),
 		// Real path, so a tmux server in one namespace is reachable from another.
 		"TMUX_TMPDIR="+filepath.Join(e.SandboxDir, "run"),
 		// Appended, not replaced: host-only tools (VS Code's `code`) must resolve.
@@ -90,6 +100,14 @@ if [ -z "${NIX_PROFILES:-}" ]; then
 fi
 PATH="$HOME/.nix-profile/bin:$PATH:$BOX_OUTER_PATH"
 export PATH
+
+# Now that the pivot is done, builds can use the sandbox's disk. The chroot's own
+# scratch stays on the host tmp, outside anything box deletes.
+if [ -n "${BOX_INNER_TMPDIR:-}" ]; then
+  mkdir -p "$BOX_INNER_TMPDIR" 2>/dev/null || true
+  TMPDIR="$BOX_INNER_TMPDIR"; export TMPDIR
+fi
+
 exec "$@"
 `
 
