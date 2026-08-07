@@ -22,7 +22,7 @@ const (
 
 var cmdInit = &command{
 	name:    "init",
-	args:    "[-c DIR] [-d DIR] [--repo URL] [-y] [--modules LIST] [--no-rc]",
+	args:    "[-c DIR] [-d DIR] [--repo URL] [-y] [--apps LIST] [--modules LIST] [--no-rc]",
 	summary: "create the sandbox: nix, the config clone, then apply",
 	long: `Sets up everything, from nothing, without root:
 
@@ -42,7 +42,8 @@ Safe to re-run: each step is skipped if already done, so it doubles as a repair.
       -y, --yes          never prompt; install every module
           --non-interactive, --automated   same as --yes
       --no-rc            do not touch any shell rc file
-      --modules LIST     comma-separated modules to enable; '' for none
+      --apps LIST        comma-separated apps to install; '' for none
+      --modules LIST     shorthand for every app in those modules
 
 Put the sandbox on a local disk. The nix store is several GB and a store on
 NFS or EFS is an order of magnitude slower to build in.`,
@@ -56,6 +57,8 @@ NFS or EFS is an order of magnitude slower to build in.`,
 		noRC := false
 		modules := ""
 		modulesSet := false
+		apps := ""
+		appsSet := false
 		for i := 0; i < len(rest); i++ {
 			switch a := rest[i]; {
 			case a == "--repo":
@@ -78,6 +81,14 @@ NFS or EFS is an order of magnitude slower to build in.`,
 				modules, modulesSet = rest[i], true
 			case strings.HasPrefix(a, "--modules="):
 				modules, modulesSet = strings.TrimPrefix(a, "--modules="), true
+			case a == "--apps":
+				if i+1 >= len(rest) {
+					return fmt.Errorf("--apps needs a list (use '' for none)")
+				}
+				i++
+				apps, appsSet = rest[i], true
+			case strings.HasPrefix(a, "--apps="):
+				apps, appsSet = strings.TrimPrefix(a, "--apps="), true
 			default:
 				return fmt.Errorf("unknown flag %q", a)
 			}
@@ -135,31 +146,43 @@ NFS or EFS is an order of magnitude slower to build in.`,
 		if fresh {
 			// Everything preselected on a fresh install; the picker is where you
 			// take things out.
-			conf = e.defaultLocalConf(sortedKeys(meta))
+			conf = e.defaultLocalConf(allApps(meta))
+		} else {
+			conf.migrateApps(meta)
 		}
 		if modulesSet {
-			conf.Modules = splitList(modules)
-			for _, n := range conf.Modules {
-				if _, ok := meta[n]; !ok {
-					return fmt.Errorf("unknown module %q\n       known: %s",
-						n, strings.Join(sortedKeys(meta), ", "))
+			// --modules names groups; --apps names individual programs. Both end
+			// up in the same list, because selection is per app now.
+			apps, err := appsForModules(meta, splitList(modules))
+			if err != nil {
+				return err
+			}
+			conf.Apps = apps
+		}
+		if appsSet {
+			conf.Apps = splitList(apps)
+			for _, n := range conf.Apps {
+				if moduleOf(meta, n) == "" {
+					return fmt.Errorf("unknown app %q\n       known: %s",
+						n, strings.Join(allApps(meta), ", "))
 				}
 			}
 		}
-		if interactive && !modulesSet {
+		chosen := modulesSet || appsSet
+		if interactive && !chosen {
 			if err := e.configureForm(conf, meta); err != nil {
 				return err
 			}
 		} else {
-			// Nobody is here to decline, so modules that opted out of unattended
+			// Nobody is here to decline, so apps that opted out of unattended
 			// installs stay out. Only on a first install or an unset list --
 			// re-running init must not silently drop what someone chose before.
-			// An explicit --modules always wins over this.
-			if !modulesSet && (fresh || conf.ModulesUnset) {
-				conf.Modules = automatic(meta)
-				if skipped := subtract(sortedKeys(meta), conf.Modules); len(skipped) > 0 {
-					note("not enabled by default: " + strings.Join(skipped, ", ") +
-						" (add with --modules, or `box modules`)")
+			// An explicit --apps/--modules always wins over this.
+			if !chosen && (fresh || conf.AppsUnset) {
+				conf.Apps = automatic(meta)
+				if skipped := subtract(allApps(meta), conf.Apps); len(skipped) > 0 {
+					note("not installed by default: " + strings.Join(skipped, ", ") +
+						" (add with --apps, or `box modules`)")
 				}
 			}
 			note("non-interactive: deriving every answer")
@@ -229,11 +252,11 @@ func (e *Env) configureForm(c *LocalConf, meta map[string]ModuleMeta) error {
 			return err
 		}
 	}
-	selected, err := pickModules(meta, c.Modules)
+	selected, err := pickApps(meta, c.Apps)
 	if err != nil {
 		return err
 	}
-	c.Modules = selected
+	c.Apps = selected
 	return nil
 }
 

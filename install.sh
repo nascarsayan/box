@@ -43,6 +43,7 @@ driven from the one-liner:
 
   ... | sh -s -- --yes --no-rc
   ... | sh -s -- --modules kubernetes,ai
+  ... | sh -s -- --apps kubectl,k9s,btop
 
 Run `box help init` for that list. The binary is self-contained and static: no
 nix, no root, no dependencies.

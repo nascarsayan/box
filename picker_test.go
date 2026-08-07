@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,11 +21,22 @@ func key(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
+// Rows come out as: ai, claude-code, codex, files, yazi, duf, kubernetes, kubectl.
+// Headings included -- the cursor walks over them too.
 func testMeta() map[string]ModuleMeta {
+	no := false
 	return map[string]ModuleMeta{
-		"ai":         {Summary: "agents", Size: "~2G"},
-		"files":      {Summary: "files", Size: "~250M"},
-		"kubernetes": {Summary: "k8s", Size: "~1G"},
+		"ai": {Summary: "agents", Apps: []App{
+			{Name: "claude-code", Size: "~270M", Default: &no},
+			{Name: "codex", Size: "~490M", Default: &no},
+		}},
+		"files": {Summary: "files", Apps: []App{
+			{Name: "yazi", Size: "~1.4G", Default: &no},
+			{Name: "duf", Size: "~10M"},
+		}},
+		"kubernetes": {Summary: "k8s", Apps: []App{
+			{Name: "kubectl", Size: "~55M"},
+		}},
 	}
 }
 
@@ -34,35 +46,52 @@ func drive(p *picker, keys ...string) {
 	}
 }
 
-func TestCursorMoves(t *testing.T) {
-	p := newPicker(testMeta(), []string{})
-	drive(p, "j", "j")
-	if got := p.names[p.cursor]; got != "kubernetes" {
-		t.Fatalf("after jj cursor = %q, want kubernetes", got)
+// The cursor starts on the first app, not the heading above it: landing on a
+// heading would make the first keypress toggle a whole group.
+func TestCursorStartsOnFirstApp(t *testing.T) {
+	p := newPicker(testMeta(), nil)
+	r := p.rows[p.cursor]
+	if r.app == nil || r.app.Name != "claude-code" {
+		t.Fatalf("cursor started on %+v, want app claude-code", r)
+	}
+}
+
+func TestCursorMovesOverHeadingsAndApps(t *testing.T) {
+	p := newPicker(testMeta(), nil)
+	drive(p, "j") // codex
+	if got := p.rows[p.cursor].app.Name; got != "codex" {
+		t.Fatalf("after j = %q, want codex", got)
+	}
+	drive(p, "j") // files heading
+	if r := p.rows[p.cursor]; r.app != nil || r.module != "files" {
+		t.Fatalf("expected the files heading, got %+v", r)
 	}
 	drive(p, "k")
-	if got := p.names[p.cursor]; got != "files" {
-		t.Fatalf("after k cursor = %q, want files", got)
+	if got := p.rows[p.cursor].app.Name; got != "codex" {
+		t.Fatalf("after k = %q, want codex", got)
 	}
 }
 
 func TestCursorClampsAtEnds(t *testing.T) {
-	p := newPicker(testMeta(), []string{})
-	drive(p, "k", "k")
+	p := newPicker(testMeta(), nil)
+	drive(p, "k", "k", "k")
 	if p.cursor != 0 {
 		t.Fatalf("cursor went above the first row: %d", p.cursor)
 	}
-	drive(p, "j", "j", "j", "j")
-	if p.cursor != len(p.names)-1 {
+	for i := 0; i < len(p.rows)+3; i++ {
+		drive(p, "j")
+	}
+	if p.cursor != len(p.rows)-1 {
 		t.Fatalf("cursor went past the last row: %d", p.cursor)
 	}
 }
 
-func TestSpaceToggles(t *testing.T) {
-	p := newPicker(testMeta(), []string{})
+// The point of the rewrite: one app at a time, without its neighbours.
+func TestSpaceTogglesOneApp(t *testing.T) {
+	p := newPicker(testMeta(), nil)
 	drive(p, " ")
-	if !reflect.DeepEqual(p.selected(), []string{"ai"}) {
-		t.Fatalf("space did not select: %v", p.selected())
+	if !reflect.DeepEqual(p.selected(), []string{"claude-code"}) {
+		t.Fatalf("space selected %v, want just claude-code", p.selected())
 	}
 	drive(p, " ")
 	if len(p.selected()) != 0 {
@@ -70,11 +99,48 @@ func TestSpaceToggles(t *testing.T) {
 	}
 }
 
+// On a heading, space is a shortcut for the whole group -- and toggling it when
+// the group is only partly on turns all of it on, not off.
+func TestSpaceOnHeadingTogglesGroup(t *testing.T) {
+	p := newPicker(testMeta(), nil)
+	p.cursor = 0 // ai heading
+	drive(p, " ")
+	if got := p.selected(); !reflect.DeepEqual(got, []string{"claude-code", "codex"}) {
+		t.Fatalf("heading toggle selected %v, want both ai apps", got)
+	}
+	drive(p, " ")
+	if len(p.selected()) != 0 {
+		t.Fatalf("second heading toggle should clear the group, got %v", p.selected())
+	}
+	// Partly on -> all on.
+	p = newPicker(testMeta(), []string{"codex"})
+	p.cursor = 0
+	drive(p, " ")
+	if got := p.selected(); !reflect.DeepEqual(got, []string{"claude-code", "codex"}) {
+		t.Fatalf("partial group should fill, got %v", got)
+	}
+}
+
+func TestGroupMarkShowsMixed(t *testing.T) {
+	p := newPicker(testMeta(), []string{"codex"})
+	if got := stripANSI(p.groupMark("ai")); got != "[~]" {
+		t.Fatalf("partly-selected group mark = %q, want [~]", got)
+	}
+	p = newPicker(testMeta(), []string{"claude-code", "codex"})
+	if got := stripANSI(p.groupMark("ai")); got != "[x]" {
+		t.Fatalf("full group mark = %q, want [x]", got)
+	}
+	p = newPicker(testMeta(), nil)
+	if got := stripANSI(p.groupMark("ai")); got != "[ ]" {
+		t.Fatalf("empty group mark = %q, want [ ]", got)
+	}
+}
+
 func TestAllAndNone(t *testing.T) {
-	p := newPicker(testMeta(), []string{})
+	p := newPicker(testMeta(), nil)
 	drive(p, "a")
-	if len(p.selected()) != 3 {
-		t.Fatalf("a should select every module, got %v", p.selected())
+	if len(p.selected()) != 5 {
+		t.Fatalf("a should select every app, got %v", p.selected())
 	}
 	drive(p, "n")
 	if len(p.selected()) != 0 {
@@ -83,27 +149,27 @@ func TestAllAndNone(t *testing.T) {
 }
 
 func TestPreselection(t *testing.T) {
-	p := newPicker(testMeta(), []string{"ai", "kubernetes"})
-	if got := p.selected(); !reflect.DeepEqual(got, []string{"ai", "kubernetes"}) {
+	p := newPicker(testMeta(), []string{"codex", "kubectl"})
+	if got := p.selected(); !reflect.DeepEqual(got, []string{"codex", "kubectl"}) {
 		t.Fatalf("preselection lost: %v", got)
 	}
 }
 
 func TestEnterConfirmsAndQuitCancels(t *testing.T) {
-	p := newPicker(testMeta(), []string{"ai"})
+	p := newPicker(testMeta(), []string{"codex"})
 	drive(p, "enter")
 	if !p.done || p.cancelled {
 		t.Fatalf("enter should confirm: done=%v cancelled=%v", p.done, p.cancelled)
 	}
-	p = newPicker(testMeta(), []string{"ai"})
+	p = newPicker(testMeta(), []string{"codex"})
 	drive(p, "q")
 	if !p.cancelled {
 		t.Fatal("q should cancel")
 	}
 }
 
-// A zero width is what a pty with no size reports; it must not collapse the wrap
-// width and break the app list after one entry.
+// A zero width is what a pty with no size reports; it must not collapse the
+// layout.
 func TestZeroWidthIgnored(t *testing.T) {
 	p := newPicker(testMeta(), nil)
 	p.Update(tea.WindowSizeMsg{Width: 0, Height: 0})
@@ -122,4 +188,30 @@ func TestLinkIsOSC8(t *testing.T) {
 	if got != want {
 		t.Fatalf("link = %q, want %q", got, want)
 	}
+}
+
+// View must not panic on any cursor position, headings included.
+func TestViewRendersEveryCursorPosition(t *testing.T) {
+	p := newPicker(testMeta(), []string{"duf"})
+	for i := range p.rows {
+		p.cursor = i
+		if p.View() == "" {
+			t.Fatalf("empty view at row %d", i)
+		}
+	}
+}
+
+// groupMark styles its output; compare the glyphs, not the escapes.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }

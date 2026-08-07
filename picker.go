@@ -10,13 +10,20 @@ import (
 )
 
 // A hand-rolled bubbletea model rather than huh.MultiSelect, because the detail
-// pane has to follow the *cursor*. huh binds DescriptionFunc to a field's value,
-// which for a multi-select is the set of chosen items, not the highlighted one --
-// so the description could not track what you are looking at.
+// has to follow the *cursor*. huh binds DescriptionFunc to a field's value,
+// which for a multi-select is the set of chosen items, not the highlighted one.
+//
+// Selection is per app. Modules are headings: they group apps and carry the
+// summary, but ticking one is just a shortcut for ticking everything under it.
+// "kubectl but not k9s" is a normal thing to want.
+type row struct {
+	module string
+	app    *App // nil on a module heading
+}
+
 type picker struct {
-	names     []string
-	meta      map[string]ModuleMeta
-	on        map[string]bool
+	rows      []row
+	on        map[string]bool // by app name
 	cursor    int
 	width     int
 	done      bool
@@ -30,26 +37,80 @@ func link(label, url string) string {
 }
 
 func newPicker(meta map[string]ModuleMeta, enabled []string) *picker {
-	names := make([]string, 0, len(meta))
+	mods := make([]string, 0, len(meta))
 	for n := range meta {
-		names = append(names, n)
+		mods = append(mods, n)
 	}
-	sort.Strings(names)
+	sort.Strings(mods)
+
+	var rows []row
+	for _, m := range mods {
+		rows = append(rows, row{module: m})
+		apps := meta[m].Apps
+		for i := range apps {
+			rows = append(rows, row{module: m, app: &apps[i]})
+		}
+	}
 
 	on := map[string]bool{}
 	for _, n := range enabled {
 		on[n] = true
 	}
-	return &picker{names: names, meta: meta, on: on, width: 80}
+	p := &picker{rows: rows, on: on, width: 80}
+	// Start on the first app, not the heading above it.
+	if len(rows) > 1 {
+		p.cursor = 1
+	}
+	return p
 }
 
 func (p *picker) Init() tea.Cmd { return nil }
+
+// appsIn returns the app names under a module heading.
+func (p *picker) appsIn(module string) []string {
+	var out []string
+	for _, r := range p.rows {
+		if r.app != nil && r.module == module {
+			out = append(out, r.app.Name)
+		}
+	}
+	return out
+}
+
+// toggle flips the row under the cursor. On a heading it sets every app in the
+// group to whatever the group is not already: all-on becomes all-off.
+func (p *picker) toggle() {
+	r := p.rows[p.cursor]
+	if r.app != nil {
+		p.on[r.app.Name] = !p.on[r.app.Name]
+		return
+	}
+	apps := p.appsIn(r.module)
+	all := true
+	for _, a := range apps {
+		if !p.on[a] {
+			all = false
+			break
+		}
+	}
+	for _, a := range apps {
+		p.on[a] = !all
+	}
+}
+
+func (p *picker) setAll(v bool) {
+	for _, r := range p.rows {
+		if r.app != nil {
+			p.on[r.app.Name] = v
+		}
+	}
+}
 
 func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		// Guarded: a pty with no size reports 0, which would clamp the wrap width
-		// to its floor and break the app list after the first entry.
+		// to its floor and break rendering.
 		if m.Width > 0 {
 			p.width = m.Width
 		}
@@ -60,20 +121,15 @@ func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.cursor--
 			}
 		case "down", "j":
-			if p.cursor < len(p.names)-1 {
+			if p.cursor < len(p.rows)-1 {
 				p.cursor++
 			}
 		case " ", "x":
-			n := p.names[p.cursor]
-			p.on[n] = !p.on[n]
+			p.toggle()
 		case "a":
-			for _, n := range p.names {
-				p.on[n] = true
-			}
+			p.setAll(true)
 		case "n":
-			for _, n := range p.names {
-				p.on[n] = false
-			}
+			p.setAll(false)
 		case "enter":
 			p.done = true
 			return p, tea.Quit
@@ -85,85 +141,104 @@ func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
+// groupMark shows whether a module is fully on, fully off, or mixed. Mixed is
+// the state that matters: it is the whole point of per-app selection, and a
+// plain checkbox would hide it.
+func (p *picker) groupMark(module string) string {
+	apps := p.appsIn(module)
+	n := 0
+	for _, a := range apps {
+		if p.on[a] {
+			n++
+		}
+	}
+	switch {
+	case n == 0:
+		return "[ ]"
+	case n == len(apps):
+		return okStyle.Render("[x]")
+	default:
+		return okStyle.Render("[~]")
+	}
+}
+
 func (p *picker) View() string {
 	if p.done || p.cancelled {
 		return ""
 	}
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("modules") + "\n")
-	b.WriteString(mutedStyle.Render("space toggles · a all · n none · enter confirm · q cancel") + "\n\n")
+	b.WriteString(titleStyle.Render("what to install") + "\n")
+	b.WriteString(mutedStyle.Render(
+		"space toggles (on a group: all of it) · a all · n none · enter confirm · q cancel") + "\n\n")
 
-	for i, n := range p.names {
-		m := p.meta[n]
+	for i, r := range p.rows {
+		cur := i == p.cursor
+		pointer := "  "
+		if cur {
+			pointer = accentStyle.Render("❯ ")
+		}
+
+		if r.app == nil {
+			name := r.module
+			if cur {
+				name = accentStyle.Bold(true).Render(name)
+			}
+			b.WriteString(pointer + p.groupMark(r.module) + " " + name + "  " +
+				mutedStyle.Render(p.meta(r.module)) + "\n")
+			continue
+		}
 
 		mark := "[ ]"
-		if p.on[n] {
+		if p.on[r.app.Name] {
 			mark = okStyle.Render("[x]")
 		}
-		name := fmt.Sprintf("%-13s", n)
-		if i == p.cursor {
-			b.WriteString(accentStyle.Render("❯ ") + mark + " " +
-				accentStyle.Bold(true).Render(name) + " " + mutedStyle.Render(m.Size) + "\n")
-			// Detail for the highlighted row only. That is the point: the list stays
-			// scannable, and the apps appear where you are already looking.
-			b.WriteString(p.detail(m))
-		} else {
-			b.WriteString("  " + mark + " " + name + " " + mutedStyle.Render(m.Size) + "\n")
+		name := fmt.Sprintf("%-14s", r.app.Name)
+		if cur {
+			// The link goes on the highlighted row only: an app list where every
+			// entry is underlined is harder to read, not easier.
+			name = accentStyle.Bold(true).Render(link(r.app.Name, r.app.URL)) +
+				strings.Repeat(" ", max(0, 14-len(r.app.Name)))
 		}
+		b.WriteString("    " + pointer + mark + " " + name + " " +
+			mutedStyle.Render(r.app.Size) + "\n")
 	}
 
 	b.WriteString("\n" + mutedStyle.Render(p.footer()))
 	return b.String()
 }
 
-func (p *picker) detail(m ModuleMeta) string {
-	indent := "    "
-	var b strings.Builder
-	b.WriteString(indent + mutedStyle.Render(m.Summary) + "\n")
-
-	// App names as clickable links, wrapped to the terminal width. Rendered with
-	// the raw escape rather than through lipgloss, whose width accounting would
-	// count the OSC 8 bytes as visible characters.
-	wrap := p.width - len(indent) - 4
-	if wrap < 20 {
-		wrap = 20
-	}
-	line, plain := indent, len(indent)
-	for i, a := range m.Apps {
-		if plain+len(a.Name)+2 > wrap && i > 0 {
-			b.WriteString(line + "\n")
-			line, plain = indent, len(indent)
-		}
-		line += link(a.Name, a.URL) + "  "
-		plain += len(a.Name) + 2
-	}
-	b.WriteString(strings.TrimRight(line, " ") + "\n\n")
-	return b.String()
+func (p *picker) meta(module string) string {
+	apps := p.appsIn(module)
+	return fmt.Sprintf("%d apps", len(apps))
 }
 
 func (p *picker) footer() string {
-	n := 0
-	for _, v := range p.on {
-		if v {
+	n, total := 0, 0
+	for _, r := range p.rows {
+		if r.app == nil {
+			continue
+		}
+		total++
+		if p.on[r.app.Name] {
 			n++
 		}
 	}
-	return fmt.Sprintf("%d of %d selected", n, len(p.names))
+	return fmt.Sprintf("%d of %d selected", n, total)
 }
 
 func (p *picker) selected() []string {
 	out := []string{}
-	for _, n := range p.names {
-		if p.on[n] {
-			out = append(out, n)
+	for _, r := range p.rows {
+		if r.app != nil && p.on[r.app.Name] {
+			out = append(out, r.app.Name)
 		}
 	}
 	return out
 }
 
-// pickModules runs the picker and returns the chosen set.
-func pickModules(meta map[string]ModuleMeta, enabled []string) ([]string, error) {
+// pickApps runs the picker and returns the chosen app names.
+func pickApps(meta map[string]ModuleMeta, enabled []string) ([]string, error) {
 	p := newPicker(meta, enabled)
 	// Output goes to stderr so that a command whose stdout is data stays pipeable.
 	prog := tea.NewProgram(p, tea.WithOutput(os.Stderr), tea.WithInput(os.Stdin))
@@ -174,4 +249,11 @@ func pickModules(meta map[string]ModuleMeta, enabled []string) ([]string, error)
 		return nil, fmt.Errorf("cancelled")
 	}
 	return p.selected(), nil
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

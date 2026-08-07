@@ -10,34 +10,78 @@ import (
 // Mirrors the `meta` attrset each box-config/modules file declares. box has no
 // built-in list: it asks nix. Cheap because `meta` never touches pkgs, so nixpkgs is
 // not instantiated to print descriptions.
+// A module is a heading, not a unit of installation: it groups apps and gives
+// them a shared summary. What gets installed is chosen per app.
 type ModuleMeta struct {
 	Summary string `json:"summary"`
-	Size    string `json:"size"`
 	Apps    []App  `json:"apps"`
-	// Absent means true. Only consulted for an unattended install; the picker
-	// still preselects everything, because there someone can say no.
+}
+
+// App is one program, with a link to where its releases live -- rendered as an
+// OSC 8 hyperlink in the picker.
+type App struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	Size string `json:"size"`
+	// Absent means true. Consulted only for an unattended install; the picker
+	// preselects everything, because there someone can say no.
 	Default *bool `json:"default,omitempty"`
 }
 
-// automatic is what an unattended install enables: every module that did not
-// opt out with `meta.default = false`. The list lives in the config repo, not
-// here -- box does not know what any module contains.
-func automatic(meta map[string]ModuleMeta) []string {
+// allApps is every app across every module, in module then declaration order.
+func allApps(meta map[string]ModuleMeta) []string {
 	out := []string{}
-	for _, n := range sortedKeys(meta) {
-		if d := meta[n].Default; d != nil && !*d {
-			continue
+	for _, m := range sortedKeys(meta) {
+		for _, a := range meta[m].Apps {
+			out = append(out, a.Name)
 		}
-		out = append(out, n)
 	}
 	return out
 }
 
-// App is one program a module installs, with a link to where its releases live.
-// Rendered as an OSC 8 hyperlink in the picker.
-type App struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
+// automatic is what an unattended install enables: every app that did not opt
+// out with `default = false`. The list lives in the config repo -- box does not
+// know what any app is.
+func automatic(meta map[string]ModuleMeta) []string {
+	out := []string{}
+	for _, m := range sortedKeys(meta) {
+		for _, a := range meta[m].Apps {
+			if a.Default != nil && !*a.Default {
+				continue
+			}
+			out = append(out, a.Name)
+		}
+	}
+	return out
+}
+
+// appsForModules expands module names to their apps, which is what
+// `--modules kubernetes` has to mean now that selection is per app.
+func appsForModules(meta map[string]ModuleMeta, mods []string) ([]string, error) {
+	out := []string{}
+	for _, m := range mods {
+		mm, ok := meta[m]
+		if !ok {
+			return nil, fmt.Errorf("unknown module %q\n       known: %s",
+				m, strings.Join(sortedKeys(meta), ", "))
+		}
+		for _, a := range mm.Apps {
+			out = append(out, a.Name)
+		}
+	}
+	return out, nil
+}
+
+// moduleOf reports which module declares an app, for error messages.
+func moduleOf(meta map[string]ModuleMeta, app string) string {
+	for _, m := range sortedKeys(meta) {
+		for _, a := range meta[m].Apps {
+			if a.Name == app {
+				return m
+			}
+		}
+	}
+	return ""
 }
 
 func (e *Env) moduleMeta() (map[string]ModuleMeta, error) {
@@ -90,40 +134,51 @@ you turn off, and turning one off garbage-collects nothing by itself -- run
 		if err != nil {
 			return fmt.Errorf("%v\n       run 'box init' first", err)
 		}
-		if conf.ModulesUnset {
-			conf.Modules = sortedKeys(meta)
-		}
+		conf.migrateApps(meta)
 
 		switch {
 		case len(rest) == 0:
 			if !isTTY() {
-				return listModules(meta, conf.Modules)
+				return listApps(meta, conf.Apps)
 			}
-			selected, err := pickModules(meta, conf.Modules)
+			selected, err := pickApps(meta, conf.Apps)
 			if err != nil {
 				return err
 			}
-			if sameSet(selected, conf.Modules) {
+			if sameSet(selected, conf.Apps) {
 				note("no change")
 				return nil
 			}
-			conf.Modules = selected
+			conf.Apps = selected
 		case rest[0] == "list":
-			return listModules(meta, conf.Modules)
+			return listApps(meta, conf.Apps)
 		case rest[0] == "enable" || rest[0] == "disable":
 			enable := rest[0] == "enable"
 			names := rest[1:]
 			if len(names) == 0 {
-				return fmt.Errorf("usage: box modules %s NAME...", rest[0])
+				return fmt.Errorf("usage: box modules %s NAME...\n"+
+					"       NAME is an app, or a module to mean all of its apps", rest[0])
 			}
+			// A module name means every app under it -- the old spelling still
+			// works, and is the obvious way to say "all the kubernetes tools".
+			var targets []string
 			for _, n := range names {
-				if _, ok := meta[n]; !ok {
-					return fmt.Errorf("unknown module %q\n       known: %s",
-						n, strings.Join(sortedKeys(meta), ", "))
+				if _, ok := meta[n]; ok {
+					apps, err := appsForModules(meta, []string{n})
+					if err != nil {
+						return err
+					}
+					targets = append(targets, apps...)
+					continue
 				}
+				if moduleOf(meta, n) == "" {
+					return fmt.Errorf("unknown app or module %q\n       apps: %s\n       modules: %s",
+						n, strings.Join(allApps(meta), ", "), strings.Join(sortedKeys(meta), ", "))
+				}
+				targets = append(targets, n)
 			}
-			for _, n := range names {
-				conf.Modules = setMembership(conf.Modules, n, enable)
+			for _, n := range targets {
+				conf.Apps = setMembership(conf.Apps, n, enable)
 			}
 		default:
 			return fmt.Errorf("unknown argument %q\n       usage: box modules [list|enable NAME...|disable NAME...]", rest[0])
@@ -132,25 +187,26 @@ you turn off, and turning one off garbage-collects nothing by itself -- run
 		if err := e.writeLocalConf(conf); err != nil {
 			return err
 		}
-		okay("modules: " + strings.Join(conf.Modules, ", "))
+		okay(fmt.Sprintf("%d apps: %s", len(conf.Apps), strings.Join(conf.Apps, ", ")))
 		return e.apply(applyOpts{})
 	},
 }
 
-func listModules(meta map[string]ModuleMeta, enabled []string) error {
+func listApps(meta map[string]ModuleMeta, enabled []string) error {
 	on := map[string]bool{}
 	for _, n := range enabled {
 		on[n] = true
 	}
 	var b strings.Builder
-	for _, n := range sortedKeys(meta) {
-		m := meta[n]
-		mark := mutedStyle.Render("  off")
-		if on[n] {
-			mark = okStyle.Render("   on")
+	for _, m := range sortedKeys(meta) {
+		fmt.Fprintf(&b, "\n%s  %s\n", accentStyle.Render(m), mutedStyle.Render(meta[m].Summary))
+		for _, a := range meta[m].Apps {
+			mark := mutedStyle.Render("  off")
+			if on[a.Name] {
+				mark = okStyle.Render("   on")
+			}
+			fmt.Fprintf(&b, "%s  %-16s %s\n", mark, a.Name, mutedStyle.Render(a.Size))
 		}
-		fmt.Fprintf(&b, "%s  %-14s %-9s %s\n",
-			mark, accentStyle.Render(n), mutedStyle.Render(m.Size), m.Summary)
 	}
 	fmt.Fprint(os.Stdout, b.String())
 	return nil

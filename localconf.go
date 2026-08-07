@@ -24,12 +24,34 @@ type LocalConf struct {
 	TmuxSocket  string            `json:"tmuxSocket"`
 	Git         GitIdentity       `json:"git"`
 	Passthrough []string          `json:"passthrough"`
-	Modules     []string          `json:"modules"`
+	Apps        []string          `json:"apps"`
 	SessionVars map[string]string `json:"sessionVariables,omitempty"`
 
-	// Set when the file had no module list at all, so callers can tell "not
-	// configured" (means: all) from an explicit empty list (means: none).
-	ModulesUnset bool `json:"-"`
+	// Written by versions that selected whole modules. Kept only so an existing
+	// install can be migrated to the app list; never written back.
+	Modules []string `json:"modules,omitempty"`
+
+	// Set when the file had no app list at all, so callers can tell "not
+	// configured" (means: the default set) from an explicit empty list
+	// (means: none).
+	AppsUnset bool `json:"-"`
+}
+
+// migrateApps fills Apps from a pre-split config. Expanding the old module list
+// rather than falling back to the defaults matters: upgrading box must not
+// change what is installed on a machine.
+func (c *LocalConf) migrateApps(meta map[string]ModuleMeta) {
+	if c.Apps != nil {
+		return
+	}
+	if c.Modules != nil {
+		if apps, err := appsForModules(meta, c.Modules); err == nil {
+			c.Apps = apps
+			c.AppsUnset = false
+			return
+		}
+	}
+	c.Apps = allApps(meta)
 }
 
 type GitIdentity struct {
@@ -48,26 +70,28 @@ func (e *Env) readLocalConf() (*LocalConf, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("%s is not valid JSON: %w", e.localConfPath(), err)
 	}
-	// nil means the key was absent or null, which is "not configured" -- and the
-	// answer to that is every module, matching what the flake does with the same
-	// input. An explicit [] is different: that is "none", and stays none.
-	if c.Modules == nil {
-		c.ModulesUnset = true
+	// nil means the key was absent or null, which is "not configured". An
+	// explicit [] is different: that is "none", and stays none.
+	if c.Apps == nil {
+		c.AppsUnset = true
 	}
 	return &c, nil
 }
 
 func (e *Env) writeLocalConf(c *LocalConf) error {
 	// A nil slice marshals to JSON null, not [], and nix then fails deep inside
-	// lib.subtractLists with "expected a list but found null". `--modules ""` is the
+	// lib.subtractLists with "expected a list but found null". `--apps ""` is the
 	// obvious way to get here.
-	if c.Modules == nil {
-		c.Modules = []string{}
+	if c.Apps == nil {
+		c.Apps = []string{}
 	}
 	if c.Passthrough == nil {
 		c.Passthrough = []string{}
 	}
-	sort.Strings(c.Modules)
+	// The old key is migrated on read; writing it back would leave two sources
+	// of truth that silently disagree the moment either is edited.
+	c.Modules = nil
+	sort.Strings(c.Apps)
 	sort.Strings(c.Passthrough)
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -85,7 +109,7 @@ func (e *Env) writeLocalConf(c *LocalConf) error {
 }
 
 // Everything derivable, so --yes needs no prompts.
-func (e *Env) defaultLocalConf(modules []string) *LocalConf {
+func (e *Env) defaultLocalConf(apps []string) *LocalConf {
 	name, email := e.gitIdentity()
 	return &LocalConf{
 		System:      "x86_64-linux",
@@ -98,7 +122,7 @@ func (e *Env) defaultLocalConf(modules []string) *LocalConf {
 		TmuxSocket:  e.Username,
 		Git:         GitIdentity{UserName: name, UserEmail: email},
 		Passthrough: e.detectPassthrough(),
-		Modules:     modules,
+		Apps:        apps,
 	}
 }
 
