@@ -14,6 +14,23 @@ type ModuleMeta struct {
 	Summary string `json:"summary"`
 	Size    string `json:"size"`
 	Apps    []App  `json:"apps"`
+	// Absent means true. Only consulted for an unattended install; the picker
+	// still preselects everything, because there someone can say no.
+	Default *bool `json:"default,omitempty"`
+}
+
+// automatic is what an unattended install enables: every module that did not
+// opt out with `meta.default = false`. The list lives in the config repo, not
+// here -- box does not know what any module contains.
+func automatic(meta map[string]ModuleMeta) []string {
+	out := []string{}
+	for _, n := range sortedKeys(meta) {
+		if d := meta[n].Default; d != nil && !*d {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // App is one program a module installs, with a link to where its releases live.
@@ -153,6 +170,21 @@ func setMembership(list []string, name string, want bool) []string {
 	}
 	if want && !seen {
 		out = append(out, name)
+	}
+	return out
+}
+
+// subtract returns the members of a that are not in b, order preserved.
+func subtract(a, b []string) []string {
+	in := map[string]bool{}
+	for _, v := range b {
+		in[v] = true
+	}
+	out := []string{}
+	for _, v := range a {
+		if !in[v] {
+			out = append(out, v)
+		}
 	}
 	return out
 }

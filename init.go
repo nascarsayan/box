@@ -131,7 +131,8 @@ NFS or EFS is an order of magnitude slower to build in.`,
 			return err
 		}
 		conf, err := e.readLocalConf()
-		if err != nil {
+		fresh := err != nil
+		if fresh {
 			// Everything preselected on a fresh install; the picker is where you
 			// take things out.
 			conf = e.defaultLocalConf(sortedKeys(meta))
@@ -150,6 +151,17 @@ NFS or EFS is an order of magnitude slower to build in.`,
 				return err
 			}
 		} else {
+			// Nobody is here to decline, so modules that opted out of unattended
+			// installs stay out. Only on a first install or an unset list --
+			// re-running init must not silently drop what someone chose before.
+			// An explicit --modules always wins over this.
+			if !modulesSet && (fresh || conf.ModulesUnset) {
+				conf.Modules = automatic(meta)
+				if skipped := subtract(sortedKeys(meta), conf.Modules); len(skipped) > 0 {
+					note("not enabled by default: " + strings.Join(skipped, ", ") +
+						" (add with --modules, or `box modules`)")
+				}
+			}
 			note("non-interactive: deriving every answer")
 		}
 		if err := e.writeLocalConf(conf); err != nil {

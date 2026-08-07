@@ -43,3 +43,32 @@ func TestDiffPinsNewInput(t *testing.T) {
 		t.Fatalf("a new input should be reported, got %v", got)
 	}
 }
+
+func TestAutomaticRespectsOptOut(t *testing.T) {
+	no, yes := false, true
+	meta := map[string]ModuleMeta{
+		"ai":          {Default: &no},  // opted out
+		"multiplexer": {Default: &no},  // opted out
+		"kubernetes":  {},              // absent means in
+		"net":         {Default: &yes}, // explicitly in
+	}
+	got := automatic(meta)
+	want := []string{"kubernetes", "net"}
+	if !sameSet(got, want) {
+		t.Fatalf("automatic() = %v, want %v", got, want)
+	}
+	// The picker is unaffected: it still offers everything.
+	if len(sortedKeys(meta)) != 4 {
+		t.Fatalf("meta should still list all four modules")
+	}
+}
+
+func TestSubtract(t *testing.T) {
+	got := subtract([]string{"a", "b", "c"}, []string{"b"})
+	if !sameSet(got, []string{"a", "c"}) {
+		t.Fatalf("subtract = %v", got)
+	}
+	if len(subtract([]string{"a"}, []string{"a"})) != 0 {
+		t.Fatalf("subtract of identical sets should be empty")
+	}
+}
