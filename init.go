@@ -229,7 +229,11 @@ NFS or EFS is an order of magnitude slower to build in.`,
 			mutedStyle.Render("enter     ") + e.boxBin() + mutedStyle.Render("   (or just: ,)"),
 			mutedStyle.Render("modules   ") + "box modules",
 			mutedStyle.Render("rebuild   ") + "box apply",
-			mutedStyle.Render("enabled   ") + strings.Join(conf.Modules, ", "),
+			// Twenty-odd app names would not fit and would not be read. The
+			// count, and where to see the rest.
+			mutedStyle.Render("installed ") +
+				fmt.Sprintf("%d of %d apps", len(conf.Apps), len(allApps(meta))) +
+				mutedStyle.Render("   (box modules list)"),
 		}
 		if len(touched) > 0 {
 			lines = append(lines, mutedStyle.Render("shortcuts ")+", ,, ,gwq ,rv ,gcw "+

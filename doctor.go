@@ -141,7 +141,7 @@ cannot find.`,
 		if _, err := os.Stat(e.localConfPath()); err == nil {
 			conf, err := e.readLocalConf()
 			if err == nil {
-				check("modules", true, strings.Join(conf.Modules, ", "))
+				check("apps", true, fmt.Sprintf("%d installed", len(conf.Apps)))
 			}
 		}
 
