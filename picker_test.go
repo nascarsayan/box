@@ -168,17 +168,41 @@ func TestEnterConfirmsAndQuitCancels(t *testing.T) {
 	}
 }
 
-// A zero width is what a pty with no size reports; it must not collapse the
+// A zero size is what a pty with no size reports; it must not collapse the
 // layout.
-func TestZeroWidthIgnored(t *testing.T) {
+func TestZeroSizeIgnored(t *testing.T) {
 	p := newPicker(testMeta(), nil)
 	p.Update(tea.WindowSizeMsg{Width: 0, Height: 0})
-	if p.width <= 0 {
-		t.Fatalf("width clobbered to %d", p.width)
+	if p.width <= 0 || p.height <= 0 {
+		t.Fatalf("size clobbered to %dx%d", p.width, p.height)
 	}
 	p.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	if p.width != 120 {
-		t.Fatalf("width = %d, want 120", p.width)
+	if p.width != 120 || p.height != 40 {
+		t.Fatalf("size = %dx%d, want 120x40", p.width, p.height)
+	}
+}
+
+func TestViewportFollowsCursorInSmallTerminal(t *testing.T) {
+	p := newPicker(testMeta(), nil)
+	p.Update(tea.WindowSizeMsg{Width: 80, Height: 8}) // three visible rows
+	for range p.rows {
+		drive(p, "j")
+	}
+	if p.cursor != len(p.rows)-1 {
+		t.Fatalf("cursor = %d, want last row", p.cursor)
+	}
+	if p.offset == 0 || p.cursor >= p.offset+p.visibleRows() {
+		t.Fatalf("cursor %d is outside viewport [%d,%d)", p.cursor, p.offset, p.offset+p.visibleRows())
+	}
+	if lines := strings.Count(p.View(), "\n") + 1; lines > p.height {
+		t.Fatalf("view uses %d lines in a %d-line terminal", lines, p.height)
+	}
+
+	for range p.rows {
+		drive(p, "k")
+	}
+	if p.cursor != 0 || p.offset != 0 {
+		t.Fatalf("up did not restore first viewport: cursor=%d offset=%d", p.cursor, p.offset)
 	}
 }
 

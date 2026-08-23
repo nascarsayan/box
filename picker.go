@@ -25,7 +25,9 @@ type picker struct {
 	rows      []row
 	on        map[string]bool // by app name
 	cursor    int
+	offset    int
 	width     int
+	height    int
 	done      bool
 	cancelled bool
 }
@@ -56,7 +58,7 @@ func newPicker(meta map[string]ModuleMeta, enabled []string) *picker {
 	for _, n := range enabled {
 		on[n] = true
 	}
-	p := &picker{rows: rows, on: on, width: 80}
+	p := &picker{rows: rows, on: on, width: 80, height: 24}
 	// Start on the first app, not the heading above it.
 	if len(rows) > 1 {
 		p.cursor = 1
@@ -109,10 +111,13 @@ func (p *picker) setAll(v bool) {
 func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		// Guarded: a pty with no size reports 0, which would clamp the wrap width
-		// to its floor and break rendering.
+		// Guarded: a pty with no size reports 0, which would collapse the
+		// viewport and break rendering.
 		if m.Width > 0 {
 			p.width = m.Width
+		}
+		if m.Height > 0 {
+			p.height = m.Height
 		}
 	case tea.KeyMsg:
 		switch m.String() {
@@ -124,6 +129,10 @@ func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.cursor < len(p.rows)-1 {
 				p.cursor++
 			}
+		case "pgup":
+			p.cursor = max(0, p.cursor-p.visibleRows())
+		case "pgdown":
+			p.cursor = min(len(p.rows)-1, p.cursor+p.visibleRows())
 		case " ", "x":
 			p.toggle()
 		case "a":
@@ -138,7 +147,25 @@ func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, tea.Quit
 		}
 	}
+	p.syncViewport()
 	return p, nil
+}
+
+// Five terminal lines belong to the title, help, separators, and footer.
+func (p *picker) visibleRows() int {
+	return max(1, p.height-5)
+}
+
+func (p *picker) syncViewport() {
+	visible := p.visibleRows()
+	if p.cursor < p.offset {
+		p.offset = p.cursor
+	}
+	if p.cursor >= p.offset+visible {
+		p.offset = p.cursor - visible + 1
+	}
+	p.offset = min(p.offset, max(0, len(p.rows)-visible))
+	p.offset = max(0, p.offset)
 }
 
 // groupMark shows whether a module is fully on, fully off, or mixed. Mixed is
@@ -172,7 +199,9 @@ func (p *picker) View() string {
 	b.WriteString(mutedStyle.Render(
 		"space toggles (on a group: all of it) · a all · n none · enter confirm · q cancel") + "\n\n")
 
-	for i, r := range p.rows {
+	end := min(len(p.rows), p.offset+p.visibleRows())
+	for i := p.offset; i < end; i++ {
+		r := p.rows[i]
 		cur := i == p.cursor
 		pointer := "  "
 		if cur {
@@ -224,7 +253,8 @@ func (p *picker) footer() string {
 			n++
 		}
 	}
-	return fmt.Sprintf("%d of %d selected", n, total)
+	return fmt.Sprintf("%d of %d selected · rows %d–%d of %d", n, total,
+		p.offset+1, min(len(p.rows), p.offset+p.visibleRows()), len(p.rows))
 }
 
 func (p *picker) selected() []string {
@@ -253,6 +283,13 @@ func pickApps(meta map[string]ModuleMeta, enabled []string) ([]string, error) {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b
