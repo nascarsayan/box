@@ -39,9 +39,9 @@ var commands []*command
 
 func init() {
 	commands = []*command{
-		cmdInit, cmdShell, cmdRun, cmdApply, cmdUpdate, cmdContribute, cmdModules, cmdConfig,
+		cmdInit, cmdShell, cmdRun, cmdApply, cmdUpdate, cmdModules, cmdConfig,
 		cmdGwq, cmdReview, cmdGC, cmdTmux,
-		cmdDoctor, cmdPrune, cmdRemove, cmdSelfUpdate, cmdVersion,
+		cmdDoctor, cmdPrune, cmdRemove, cmdVersion,
 	}
 }
 
@@ -115,9 +115,9 @@ func printHelp() {
 		title string
 		names []string
 	}{
-		{"lifecycle", []string{"init", "apply", "update", "prune", "remove", "self-update"}},
+		{"lifecycle", []string{"init", "apply", "update", "prune", "remove"}},
 		{"using it", []string{"shell", "run", "tmux"}},
-		{"configuration", []string{"modules", "config", "contribute"}},
+		{"configuration", []string{"modules", "config"}},
 		{"review workflow", []string{"gwq", "review", "gc"}},
 		{"other", []string{"doctor", "version"}},
 	}

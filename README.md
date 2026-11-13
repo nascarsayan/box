@@ -36,7 +36,7 @@ and tool setting — is a nix configuration in a separate repo,
 
 That split is deliberate:
 
-- **box** is a binary you never build. It updates with `box self-update`.
+- **box** is a binary you never build. `box update` replaces it with the latest release, pulls the config, and rebuilds.
 - **box-config** is a git clone you own. Your machine-specific values are
   gitignored, so any change you make to the shared library shows up as an ordinary
   `git diff` and can be sent upstream.
@@ -55,8 +55,8 @@ box                    the CLI (this repo, binary only)
 lifecycle
   init         create the sandbox: nix, the config clone, then apply
   apply        rebuild after changing the configuration
+  update       update box and the configuration, then rebuild
   remove       delete the sandbox and its nix store
-  self-update  replace this binary with the latest release
 
 using it
   shell        enter the sandbox (bare `box`, and what `,` runs)

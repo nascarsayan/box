@@ -16,69 +16,11 @@ const releasesAPI = "https://api.github.com/repos/nascarsayan/box/releases/lates
 // assetName matches what the release workflow uploads.
 func assetName() string { return fmt.Sprintf("box-%s-%s", runtime.GOOS, runtime.GOARCH) }
 
-var cmdSelfUpdate = &command{
-	name:    "self-update",
-	summary: "replace this binary with the latest release",
-	long: `Downloads the newest box release for this platform and replaces the running
-binary in place, then refreshes the copy inside the sandbox.
-
-box is a single static binary with no dependencies, so updating it is a download and
-a rename -- it does not touch the sandbox, the configuration, or nix. To update the
-*configuration*, pull in the config repo and run 'box apply'; to update the pinned
-package versions, run 'nix flake update' there.`,
-	run: func(e *Env, args []string) error {
-		if _, err := e.parseCommonFlags(args); err != nil {
-			return err
-		}
-
-		step(1, 3, "checking for a newer release")
-		tag, url, err := latestAsset()
-		if err != nil {
-			return err
-		}
-		if tag == version {
-			okay("already on " + version)
-			return nil
-		}
-		note(fmt.Sprintf("%s -> %s", version, tag))
-
-		step(2, 3, "downloading "+assetName())
-		self, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		self, _ = filepath.EvalSymlinks(self)
-
-		// Beside the target, so the rename is atomic on the same filesystem.
-		tmp := self + ".new"
-		if err := download(url, tmp); err != nil {
-			os.Remove(tmp)
-			return err
-		}
-		if err := os.Chmod(tmp, 0o755); err != nil {
-			os.Remove(tmp)
-			return err
-		}
-		// Fine on Linux: the old inode stays alive for this process.
-		if err := os.Rename(tmp, self); err != nil {
-			os.Remove(tmp)
-			return err
-		}
-		okay(self)
-
-		step(3, 3, "refreshing the sandbox copy")
-		if err := e.installSelf(); err != nil {
-			note("could not refresh it: " + err.Error())
-		}
-		return nil
-	},
-}
-
 func latestAsset() (tag, url string, err error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, _ := http.NewRequest("GET", releasesAPI, nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "box-self-update")
+	req.Header.Set("User-Agent", "box-update")
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", err
