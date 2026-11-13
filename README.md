@@ -1,5 +1,10 @@
 # box
 
+> **Retired (2026-11-13).** box is no longer maintained and this repository is archived.
+> Hosts use [`init-sh`](https://github.com/nascarsayan/init-sh); the shell templates live in
+> [`box-config`](https://github.com/nascarsayan/box-config). Existing installs can run
+> `box remove --yes --purge-config`.
+
 A dev sandbox that needs no root: `nix-user-chroot` + `home-manager`, driven by one
 static binary.
 
